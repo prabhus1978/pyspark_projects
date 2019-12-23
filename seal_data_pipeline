@@ -2,11 +2,12 @@ import argparse
 import os
 from typing import List
 
+from clarify.library.features.upk_link.v1.upk_link_v1 import UpkLinkV1
 from pyspark.ml.base import Transformer
 from pyspark.sql.dataframe import DataFrame
 from pyspark.sql.session import SparkSession
 
-from clarify.library.common import flatten, AttrDict
+from clarify.library.common import flatten, AttrDict, merge_dictionaries
 from clarify.library.data_sources.seal.claim_837i.v1.claim_837i_v1 import Claim837IV1
 from clarify.library.data_sources.seal.claim_837p.v1.claim_837p_v1 import Claim837PV1
 from clarify.library.data_sources.seal.claim_line_837i.v1.claim_line_837i_v1 import ClaimLine837IV1
@@ -44,7 +45,9 @@ class CsvToParquetIguanaPipeline(BaseClarifyPipeline):
         # noinspection SpellCheckingInspection
         stages = flatten([
             Claim837IV1(parameters).transformers,
+            UpkLinkV1(merge_dictionaries(parameters, {"view_name:" "claim_837i"})).transformers,
             Claim837PV1(parameters).transformers,
+            UpkLinkV1(merge_dictionaries(parameters, {"view_name:" "claim_837p"})).transformers,
             ClaimLine837IV1(parameters).transformers,
             ClaimLine837PV1(parameters).transformers,
         ])
@@ -69,8 +72,8 @@ class CsvToParquetIguanaPipeline(BaseClarifyPipeline):
                                       additional_parameters=AttrDict({
                                           "view": "claim_line_837p",
                                           "target_path": os.path.join(data_dir, "claim_line_837p"),
-                                          "bucket_by": ["Claim_ID"],
-                                          "sort_by": ["Claim_ID"],
+                                          "bucket_by": ["claim_id"],
+                                          "sort_by": ["claim_id"],
                                           "num_partition": parameters.bucket_count,
                                           "spark_session": self.spark_session
                                       })),
@@ -78,8 +81,8 @@ class CsvToParquetIguanaPipeline(BaseClarifyPipeline):
                                       additional_parameters=AttrDict({
                                           "view": "claim_line_837i",
                                           "target_path": os.path.join(data_dir, "claim_line_837i"),
-                                          "bucket_by": ["Claim_ID"],
-                                          "sort_by": ["Claim_ID"],
+                                          "bucket_by": ["claim_id"],
+                                          "sort_by": ["claim_id"],
                                           "num_partition": parameters.bucket_count,
                                           "spark_session": self.spark_session
                                       })),
@@ -87,8 +90,8 @@ class CsvToParquetIguanaPipeline(BaseClarifyPipeline):
                                       additional_parameters=AttrDict({
                                           "view": "claim_837i",
                                           "target_path": os.path.join(data_dir, "claim_837i"),
-                                          "bucket_by": ["Claim_ID", "Patient_ID"],
-                                          "sort_by": ["Claim_ID", "Patient_ID"],
+                                          "bucket_by": ["claim_id", "patient_id"],
+                                          "sort_by": ["claim_id", "patient_id"],
                                           "num_partition": parameters.bucket_count,
                                           "spark_session": self.spark_session
                                       })),
@@ -96,8 +99,8 @@ class CsvToParquetIguanaPipeline(BaseClarifyPipeline):
                                       additional_parameters=AttrDict({
                                           "view": "claim_837p",
                                           "target_path": os.path.join(data_dir, "claim_837p"),
-                                          "bucket_by": ["Claim_ID", "Patient_ID"],
-                                          "sort_by": ["Claim_ID", "Patient_ID"],
+                                          "bucket_by": ["claim_id", "patient_id"],
+                                          "sort_by": ["claim_id", "patient_id"],
                                           "num_partition": parameters.bucket_count,
                                           "spark_session": self.spark_session
                                       }))
@@ -136,8 +139,8 @@ class CsvToParquetIguanaPipeline(BaseClarifyPipeline):
                                                                view="claim_837i",
                                                                file_path=os.path.join(data_dir, "claim_837i"),
                                                                bucket_count=parameters.bucket_count,
-                                                               bucket_by=["Claim_ID", "Patient_ID"],
-                                                               sort_by=["Claim_ID", "Patient_ID"],
+                                                               bucket_by=["claim_id", "patient_id"],
+                                                               sort_by=["claim_id", "patient_id"],
                                                                enable=not self.has_loaded_data,
                                                                progress_logger=progress_logger
                                                                ),
@@ -145,8 +148,8 @@ class CsvToParquetIguanaPipeline(BaseClarifyPipeline):
                                                                view="claim_837p",
                                                                file_path=os.path.join(data_dir, "claim_837p"),
                                                                bucket_count=parameters.bucket_count,
-                                                               bucket_by=["Claim_ID", "Patient_ID"],
-                                                               sort_by=["Claim_ID", "Patient_ID"],
+                                                               bucket_by=["claim_id", "patient_id"],
+                                                               sort_by=["claim_id", "patient_id"],
                                                                enable=not self.has_loaded_data,
                                                                progress_logger=progress_logger
                                                                ),
@@ -154,8 +157,8 @@ class CsvToParquetIguanaPipeline(BaseClarifyPipeline):
                                                                view="claim_line_837i",
                                                                file_path=os.path.join(data_dir, "claim_line_837i"),
                                                                bucket_count=parameters.bucket_count,
-                                                               bucket_by=["Claim_ID"],
-                                                               sort_by=["Claim_ID"],
+                                                               bucket_by=["claim_id"],
+                                                               sort_by=["claim_id"],
                                                                enable=not self.has_loaded_data,
                                                                progress_logger=progress_logger
                                                                ),

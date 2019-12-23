@@ -1,0 +1,126 @@
+# Spark . installation and set-up reference
+
+Installation
+
+There are two options for step 1: A and B. If you run into errors in A, go to B then return to where you left off in A. You will likely need to install Homebrew, or brew, anyway so please be sure to go through those steps when possible.
+
+Step 1A) Prerequisites
+
+Remove Anaconda, if installed on your system. For Mac, use the link: https://nektony.com/how-to/uninstall-anaconda-on-a-mac
+
+Download and install the appropriate Java 8 SDK for your operating system:
+https://www.oracle.com/technetwork/java/javase/downloads/jdk8-downloads-2133151.html Run java -version to validate Java installation.
+
+The post https://stackoverflow.com/questions/21964709/how-to-set-or-change-the-default-java-jdk-version-on-os-x can be useful for ensuring that the correct name of the java environment is used. According to this article, if your system has multiple version of Java installed, adding the following to your ~/.bash_profile file may be helpful:
+
+#Java8
+export JAVA_HOME=`/usr/libexec/java_home -v 1.8.0_212`
+Note that it may be necessary to delete a Java installation from your machine if its name conflicts with that of the Java 8 SDK that is recommended above.
+
+Download and unzip Scala 2.12.8 into your home directory:
+https://www.scala-lang.org/download/ (Click on "Download the Scala binaries for macos")
+
+Download and unzip Spark 2.4.2 into your home directory:
+https://spark.apache.org/downloads.html (If 2.4.2 is not available then get the latest and replace "2.4.2" in the instructions below)
+
+Add Scala and Spark to your system PATH by adding this to your ~/.bash_profile: On Mac, first verify that the file ~/.bash_profile exists in your home directory by using ls ~/. This will list the files and directories in your home directory. If it does not exist, then run the following:
+
+cd ~/ 
+touch .bash_profile
+Once this is done, you can run the lines below:
+
+export SCALA_HOME=~/scala-2.12.8
+export PATH=$PATH:$SCALA_HOME/bin
+
+export SPARK_HOME=~/spark-2.4.2-bin-hadoop2.7
+export PATH=$PATH:$SPARK_HOME/bin
+source ~/.bash_profile to refresh $PATH.
+
+**Regarding the Python installations, **there have been slight issues for those running Python versions 3.7 and above. Specifically, a "not found" error would appear when trying to create a virtual environment and point to the Python installation with that version. In this case, it may be helpful to remove the existing Python installation, using, for example:
+
+rm -rf ~/.pyenv/versions/3.7.1
+and then reinstall this version of Python, using:
+
+CFLAGS="-I$(xcrun --show-sdk-path)/usr/include" pyenv install 3.7.1
+If you don't have pyenv;
+
+brew update
+brew install pyenv
+After that, a virtual environment, pointing to this Python version, can be created (please note an explicit reference to the Python version):
+
+python3 -m venv venv_teradrome
+Activate the virtual environment:
+
+source venv_teradrome/bin/activate
+Now run spark-shell to validate installation worked.
+
+1B) If you want to use brew, you can accomplish much of the above by doing this instead:
+
+Install brew by running: /usr/bin/ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)" Then run:
+
+brew tap homebrew/cask-versions
+brew tap adoptopenjdk/openjdk
+brew cask install adoptopenjdk/openjdk/adoptopenjdk8
+brew untap adoptopenjdk/openjdk
+brew untap homebrew/cask-versions
+brew cleanup
+Add "export JAVA_HOME=/usr/libexec/java_home -v 1.8" to your bash_profile.
+
+brew install scala
+brew install apache-spark
+You should now be able to run spark-shell
+
+Step 2) Install the pipeline package (it will ask for your username and password.)
+
+git clone https://github.com/clarifyhealth/teradrome.git
+Then:
+
+cd teradrome
+
+# install packages into a new virtual environment:
+make devsetup
+Step 3) Setup pre commit hook for PEP8 and Flake9. One time effort
+
+make setup-pre-commit
+Note: Anaconda should be uninstalled before installation. Otherwise, it would inhibit the execution of this step.
+
+Step 4) Pre commit hooks. Run the below command once to check otherwise it automatically get executed when you commit
+
+Unless you fix validations it will not allow you to commit. For manual runs use the same command to see the what the PEP8 and FLAKE8 code compliance you are breaking.
+
+make run-pre-commit
+Step 5) Install the dependencies with pip install requirements.txt and pip install requirements-test.txt. This step is required if the devsetup did not install all the required dependencies.
+
+How to run a pipeline
+
+Assuming you have emrcli config folder.
+Edit your steps.json
+The words in capital you need to edit as per your pipeline needs below
+        {
+            "Name": "YOUR_PIPELINE_NAME",
+            "ActionOnFailure": "CONTINUE",
+            "HadoopJarStep": {
+              "Jar": "command-runner.jar",
+              "Args": [
+                "spark-submit",
+                "--deploy-mode",
+                "cluster",
+                "--name",
+                "YOUR_PIPELINE_NAME",
+                "--executor-cores",
+                "${executor_cores}",
+                "--executor-memory",
+                "${executor_memory}g",
+                "--driver-memory",
+                "${driver_memory}g",
+                "spark.yarn.appMasterEnv.PYSPARK_PYTHON=python3",
+                "--conf",
+                "spark.executorEnv.PYSPARK_PYTHON=python3",
+                "/usr/local/lib/python3.6/site-packages/clarify/library/etl_runner.py",
+                "YOUR.PIPELINE.PACKAGE",
+                "--VARIABLE1=s3://clarify-datasource-bucket/claim_data/ability_payer/historical_2015_2018/claim/",
+                "--VARIABLE2=0.5",
+                "--VARIABLE2=s3://bucket/target"
+              ]
+            }
+          }

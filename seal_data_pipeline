@@ -1,0 +1,254 @@
+import argparse
+import os
+from typing import List
+
+from pyspark.ml.base import Transformer
+from pyspark.sql.dataframe import DataFrame
+from pyspark.sql.session import SparkSession
+
+from clarify.library.common import flatten, AttrDict
+from clarify.library.data_sources.seal.claim_837i.v1.claim_837i_v1 import Claim837IV1
+from clarify.library.data_sources.seal.claim_837p.v1.claim_837p_v1 import Claim837PV1
+from clarify.library.data_sources.seal.claim_line_837i.v1.claim_line_837i_v1 import ClaimLine837IV1
+from clarify.library.data_sources.seal.claim_line_837p.v1.claim_line_837p_v1 import ClaimLine837PV1
+from clarify.library.exports.exports_loader import create_export_transformer
+from clarify.library.pipelines.base_clarify_pipeline import BaseClarifyPipeline
+from clarify.library.pipelines.common import create_generic_parquet_with_buckets_loader, \
+    create_detailed_table_statistics_calculator, create_generic_athena_table_creator, \
+    create_generic_parquet_loader
+from clarify.library.progress_logger import ProgressLogger, ProgressLogMetric
+from clarify.library.utils.tera_catalog_repository import TeraCatalogRepository
+from clarify.logger.yarn_logger import get_logger
+
+
+class CsvToParquetIguanaPipeline(BaseClarifyPipeline):
+    """
+    seal CSV to Parquet Pipeline
+    """
+
+    def __init__(self, parameters: AttrDict, spark_session: SparkSession, tera_catalog_repository: TeraCatalogRepository = None):
+        super().__init__(parameters, spark_session, tera_catalog_repository)
+        self.has_loaded_data = False
+        self.athena_database_name = self.parameters.get("athena_database_name", None) or "raw_seal_qa"
+        self.data_source = self.parameters.get("data_source", None) or "seal"
+
+    def preprocess(self, df: DataFrame,
+                   parent_progress_logger: ProgressLogger) -> DataFrame:
+        """
+
+        :param parent_progress_logger:
+        :param df:
+        """
+        parameters = self.parameters
+
+        # noinspection SpellCheckingInspection
+        stages = flatten([
+            Claim837IV1(parameters).transformers,
+            Claim837PV1(parameters).transformers,
+            ClaimLine837IV1(parameters).transformers,
+            ClaimLine837PV1(parameters).transformers,
+        ])
+
+        self.has_loaded_data = True
+        return super()._preprocess_with_stages(df, stages, parent_progress_logger=parent_progress_logger)
+
+    def save(self, df: DataFrame,
+             parent_progress_logger: ProgressLogger) -> None:
+        """
+
+        :param parent_progress_logger:
+        :param df:
+        """
+        parameters = self.parameters
+        self.spark_session.sparkContext.setJobGroup("Save", "Saving files")
+        data_dir: str = parameters.default_export_path
+
+        stages = flatten([
+            # data sources
+            create_export_transformer("s3.bucketizer.v2", parameters,
+                                      additional_parameters=AttrDict({
+                                          "view": "claim_line_837p",
+                                          "target_path": os.path.join(data_dir, "claim_line_837p"),
+                                          "bucket_by": ["Claim_ID"],
+                                          "sort_by": ["Claim_ID"],
+                                          "num_partition": parameters.bucket_count,
+                                          "spark_session": self.spark_session
+                                      })),
+            create_export_transformer("s3.bucketizer.v2", parameters,
+                                      additional_parameters=AttrDict({
+                                          "view": "claim_line_837i",
+                                          "target_path": os.path.join(data_dir, "claim_line_837i"),
+                                          "bucket_by": ["Claim_ID"],
+                                          "sort_by": ["Claim_ID"],
+                                          "num_partition": parameters.bucket_count,
+                                          "spark_session": self.spark_session
+                                      })),
+            create_export_transformer("s3.bucketizer.v2", parameters,
+                                      additional_parameters=AttrDict({
+                                          "view": "claim_837i",
+                                          "target_path": os.path.join(data_dir, "claim_837i"),
+                                          "bucket_by": ["Claim_ID", "Patient_ID"],
+                                          "sort_by": ["Claim_ID", "Patient_ID"],
+                                          "num_partition": parameters.bucket_count,
+                                          "spark_session": self.spark_session
+                                      })),
+            create_export_transformer("s3.bucketizer.v2", parameters,
+                                      additional_parameters=AttrDict({
+                                          "view": "claim_837p",
+                                          "target_path": os.path.join(data_dir, "claim_837p"),
+                                          "bucket_by": ["Claim_ID", "Patient_ID"],
+                                          "sort_by": ["Claim_ID", "Patient_ID"],
+                                          "num_partition": parameters.bucket_count,
+                                          "spark_session": self.spark_session
+                                      }))
+        ])
+
+        super()._save_with_stages(df, stages, parent_progress_logger=parent_progress_logger)
+
+    __raw_views: List[str] = [
+        "claim_837i",
+        "claim_837p",
+        "claim_line_837i",
+        "claim_line_837p"
+    ]
+
+    def calculate_statistics(self, df: DataFrame, parent_progress_logger: ProgressLogger) -> DataFrame:
+        """
+        :param parent_progress_logger:
+        :param df:
+        """
+        logger = get_logger(__name__)
+        parameters = self.parameters
+        logger.info("===================  calculate_statistics  =============")
+        logger.info(parameters)
+
+        data_dir: str = parameters.default_export_path
+        stats_dir: str = os.path.join(parameters.default_export_path, "stats")
+
+        with ProgressLogger(self.spark_session,
+                            mlflow_run_name=f"calculate_statistics",
+                            mlflow_experiment_name=self.mlflow_experiment_name,
+                            mlflow_tracking_uri=self.mlflow_tracking_uri,
+                            parent_progress_logger=parent_progress_logger) as progress_logger:
+            with ProgressLogMetric(name="_total", progress_logger=progress_logger):
+                stages: List[Transformer] = flatten([
+                    create_generic_parquet_with_buckets_loader(name="load seal institutional claims",
+                                                               view="claim_837i",
+                                                               file_path=os.path.join(data_dir, "claim_837i"),
+                                                               bucket_count=parameters.bucket_count,
+                                                               bucket_by=["Claim_ID", "Patient_ID"],
+                                                               sort_by=["Claim_ID", "Patient_ID"],
+                                                               enable=not self.has_loaded_data,
+                                                               progress_logger=progress_logger
+                                                               ),
+                    create_generic_parquet_with_buckets_loader(name="load seal professional claims",
+                                                               view="claim_837p",
+                                                               file_path=os.path.join(data_dir, "claim_837p"),
+                                                               bucket_count=parameters.bucket_count,
+                                                               bucket_by=["Claim_ID", "Patient_ID"],
+                                                               sort_by=["Claim_ID", "Patient_ID"],
+                                                               enable=not self.has_loaded_data,
+                                                               progress_logger=progress_logger
+                                                               ),
+                    create_generic_parquet_with_buckets_loader(name="load seal institutional claim lines",
+                                                               view="claim_line_837i",
+                                                               file_path=os.path.join(data_dir, "claim_line_837i"),
+                                                               bucket_count=parameters.bucket_count,
+                                                               bucket_by=["Claim_ID"],
+                                                               sort_by=["Claim_ID"],
+                                                               enable=not self.has_loaded_data,
+                                                               progress_logger=progress_logger
+                                                               ),
+                    create_generic_parquet_with_buckets_loader(name="load seal professional claim lines",
+                                                               view="claim_line_837p",
+                                                               file_path=os.path.join(data_dir, "claim_line_837p"),
+                                                               bucket_count=parameters.bucket_count,
+                                                               bucket_by=["Claim_ID"],
+                                                               sort_by=["Claim_ID"],
+                                                               enable=not self.has_loaded_data,
+                                                               progress_logger=progress_logger
+                                                               ),
+                ])
+
+                super()._process_with_progress_logger(df, stages, progress_logger=progress_logger)
+
+                stages: List[Transformer] = flatten([
+                    create_detailed_table_statistics_calculator(
+                        name=f"calculate detailed stats for {view}",
+                        view=view,
+                        enable=parameters.get("log_data_frame_statistics",
+                                              True),
+                        athena_database_name=self.athena_database_name,
+                        athena_table_name=f"raw_{view}_statistics",
+                        export_path=stats_dir,
+                        progress_logger=progress_logger)
+                    for view in self.__raw_views
+                ])
+
+                super()._process_in_parallel(df, stages, progress_logger=progress_logger)
+                progress_logger.set_tag("success", True)
+                return df
+
+    def create_athena_tables_after_postprocess(self, df: DataFrame,
+                                               parent_progress_logger: ProgressLogger) -> DataFrame:
+        """
+        :param parent_progress_logger:
+        :param df:
+        """
+        logger = get_logger(__name__)
+        parameters = self.parameters
+        logger.info("===================  create_athena_tables_after_postprocess  =============")
+        logger.info(parameters)
+
+        data_dir: str = parameters.default_export_path
+
+        with ProgressLogger(self.spark_session,
+                            mlflow_run_name=f"create_athena_tables_after_postprocess",
+                            mlflow_experiment_name=self.mlflow_experiment_name,
+                            mlflow_tracking_uri=self.mlflow_tracking_uri,
+                            parent_progress_logger=parent_progress_logger) as progress_logger:
+            with ProgressLogMetric(name="_total", progress_logger=progress_logger):
+                stages: List[Transformer] = flatten([
+                    create_generic_parquet_loader(view=view,
+                                                  file_path=os.path.join(data_dir, view),
+                                                  progress_logger=progress_logger)
+                    for view in self.__raw_views
+                ])
+
+                super()._process_in_parallel(df, stages, progress_logger=progress_logger)
+
+                # now export to athena
+                stages: List[Transformer] = flatten([
+                    create_generic_athena_table_creator(
+                        table_name=f"raw_{view}",
+                        source_path=os.path.join(data_dir, view),
+                        view=view,
+                        athena_database_name=self.athena_database_name,
+                        progress_logger=progress_logger)
+                    for view in self.__raw_views
+                ])
+
+                super()._process_with_progress_logger(df, stages, progress_logger=progress_logger)
+                progress_logger.set_tag("success", True)
+                return df
+
+    def parse_parameters(self, main_args):
+        """
+        This method parses arguments
+        Args:
+            main_args: Arguments
+        Returns:
+           args : parsed arguments
+        """
+
+        parser = argparse.ArgumentParser(description="Iguana Pipeline", parents=super().default_parser(),
+                                         conflict_handler='resolve')
+
+        # input paths, note that due to the monthly nature of iguana data,
+        #   the * allows to absorb multiple sub-directories
+        parser.add_argument("--default_export_path", required=True, help="path to use when no specific path is defined")
+        parser.add_argument("--athena_database_name", required=False,
+                            help="The name of the athena database, defaults to iguana")
+        parser.add_argument("--data_source", required=False,
+                            help="The name of the data source, defaults to iguana")
+        return super().parse_parameters(main_args=main_args, parser=parser)
